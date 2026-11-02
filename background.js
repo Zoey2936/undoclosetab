@@ -17,6 +17,7 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 "use strict";
+importScripts("utils/storage.js", "tabhandling.js");
 
 
 // Fired if the toolbar button is clicked.
@@ -46,7 +47,7 @@ async function ToolbarButtonClicked(tab, OnClickData) {
   }
 
   // Allow to restore in background with shift+click on the toolbar button
-  if (OnClickData.modifiers.includes("Shift"))
+  if (OnClickData?.modifiers.includes("Shift"))
     browser.tabs.update(tab.id, {active: true});
 }
 
@@ -55,15 +56,14 @@ function TabMenuProperties(tab, id_prefix) {
   return {
     id: id_prefix + ":" + tab.sessionId,
     title: tab.title.replace(/&/g, "&&"),
-    icons: {18: tab.favIconUrl || "icons/no-favicon.svg"}
   }
 }
 
-// Fired if a menu is shown
+// Fired if the closed tabs, the preferences or the focused window change
 // Updates the context menu entries with the list of last closed tabs.
 var lastMenuInstanceId = 0;
 var nextMenuInstanceId = 1;
-async function OnMenuShown() {
+async function UpdateMenus() {
   var menuInstanceId = nextMenuInstanceId++;
   lastMenuInstanceId = menuInstanceId;
 
@@ -71,10 +71,15 @@ async function OnMenuShown() {
   const tabs = await TabHandling.GetLastClosedTabs(prefs.showNumber, prefs.onlyCurrent);
 
   // How many items are allowed on the top level?
-  const max_allowed = browser.menus.ACTION_MENU_TOP_LEVEL_LIMIT - (prefs.showClearList ? 1 : 0);
+  const max_allowed = browser.contextMenus.ACTION_MENU_TOP_LEVEL_LIMIT - (prefs.showClearList ? 1 : 0);
 
   // Start with a completely empty menu
-  await browser.menus.removeAll();
+  await browser.contextMenus.removeAll();
+
+  // This is how Mozilla describes how to prevent race conditions.
+  if (menuInstanceId !== lastMenuInstanceId) {
+    return; // Menus were updated again in the meantime.
+  }
 
   // This block is for creating the "page" or "tab" context menus.
   // They are only drawn if at least one tab can be restored.
@@ -85,14 +90,14 @@ async function OnMenuShown() {
     if (prefs.showPageMenu)
       contexts.push("page");
 
-    let rootmenu = browser.menus.create({
+    let rootmenu = browser.contextMenus.create({
       id: "RootMenu",
       title: browser.i18n.getMessage("page_contextmenu_submenu"),
       contexts: contexts
     });
 
     tabs.forEach((tab) => {
-      browser.menus.create({
+      browser.contextMenus.create({
         ...TabMenuProperties(tab, "PM"),
         contexts: contexts,
         parentId: rootmenu
@@ -100,13 +105,13 @@ async function OnMenuShown() {
     });
 
     if (prefs.showClearList) {
-      browser.menus.create({
+      browser.contextMenus.create({
         id: "ClearListSeparator",
         type: "separator",
         contexts: contexts,
         parentId: rootmenu
       });
-      browser.menus.create({
+      browser.contextMenus.create({
         id: "PM:ClearList",
         title: browser.i18n.getMessage("clearlist_menuitem"),
         contexts: contexts,
@@ -116,7 +121,7 @@ async function OnMenuShown() {
   }
 
   if (prefs.showPageMenuitem) {
-    browser.menus.create({
+    browser.contextMenus.create({
       id: "UndoCloseTab",
       title: browser.i18n.getMessage("extensionName"),
       contexts: ["page"]
@@ -127,9 +132,9 @@ async function OnMenuShown() {
   // no "More items" menu is needed.
   if (tabs.length <= max_allowed) {
     tabs.forEach((tab) => {
-      browser.menus.create({
+      browser.contextMenus.create({
         ...TabMenuProperties(tab, "BA"),
-        contexts: ["browser_action"]
+        contexts: ["action"]
       });
     });
   }
@@ -137,41 +142,34 @@ async function OnMenuShown() {
   // and place the rest of them into a submenu.
   else {
     tabs.splice(0, max_allowed - 1).forEach((tab) => {
-      browser.menus.create({
+      browser.contextMenus.create({
         ...TabMenuProperties(tab, "BA"),
-        contexts: ["browser_action"]
+        contexts: ["action"]
       });
     });
 
-    let moreMenu = browser.menus.create({
+    let moreMenu = browser.contextMenus.create({
       id: "MoreClosedTabs",
       title: browser.i18n.getMessage("more_entries_menu"),
-      icons: {18: "icons/folder.svg"},
-      contexts: ["browser_action"]
+      contexts: ["action"]
     });
 
     tabs.forEach((tab) => {
-      browser.menus.create({
+      browser.contextMenus.create({
         ...TabMenuProperties(tab, "BA"),
-        contexts: ["browser_action"],
+        contexts: ["action"],
         parentId: moreMenu
       });
     });
   }
 
   if (tabs.length && prefs.showClearList) {
-    browser.menus.create({
+    browser.contextMenus.create({
       id: "BA:ClearList",
       title: browser.i18n.getMessage("clearlist_menuitem"),
-      contexts: ["browser_action"],
+      contexts: ["action"],
     });
   }
-
-  // This is how Mozilla describes how to prevent race conditions.
-  if (menuInstanceId !== lastMenuInstanceId) {
-    return; // Menu was closed and shown again.
-  }
-  await browser.menus.refresh();
 }
 
 // Fired if one of our context menu entries is clicked.
@@ -200,19 +198,18 @@ TabHandling.Init();
 // Check for the API we expect for the "full desktop feature set"
 // This needs revision as soon as there is some Android browser with
 // browser.sessions support.
-if (browser.menus !== undefined &&
+if (browser.contextMenus !== undefined &&
     browser.windows !== undefined &&
     browser.sessions !== undefined) {
 
-  browser.menus.onShown.addListener(OnMenuShown);
-  browser.menus.onClicked.addListener(ContextMenuClicked);
-
-  browser.menus.onHidden.addListener(function() {
-    lastMenuInstanceId = 0;
-  });
+  browser.sessions.onChanged.addListener(UpdateMenus);
+  browser.storage.onChanged.addListener(UpdateMenus);
+  browser.windows.onFocusChanged.addListener(UpdateMenus);
+  browser.contextMenus.onClicked.addListener(ContextMenuClicked);
+  UpdateMenus();
 }
 
-browser.browserAction.onClicked.addListener(ToolbarButtonClicked);
+browser.action.onClicked.addListener(ToolbarButtonClicked);
 
 // This is broken by https://bugzil.la/1542044
 //IconUpdater.Init("icons/undoclosetab.svg");

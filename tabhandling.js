@@ -56,7 +56,7 @@ const TabHandling = {
     // Now remove the additional "tab" object, we have to walk through,
     // (don't need that) after backing up the session lastModified.
     tabs.forEach((o, i, a) => {
-      a[i].tab._tabCloseTime = a[i].lastModified;
+      a[i].tab._tabCloseTime = a[i].lastModified * 1000;
       a[i] = a[i].tab
     });
 
